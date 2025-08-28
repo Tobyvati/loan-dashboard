@@ -399,7 +399,14 @@ export default function LoanDashboard() {
         const updated = await updateLoanById(editContractId, patch);
         if (updated) setLoans((prev) => prev.map((l) => (l.contractId === editContractId ? updated : l)));
       } else {
-        const payload = { contractId: newContractId, ...base };
+        // Đảm bảo luôn có mã HĐ random 6 số ngay trước khi insert
+        let cid = newContractId;
+        if (!cid) {
+          const taken = new Set(loans.map((l) => Number(l.contractId ?? l.contract_id ?? l.id) || 0));
+          cid = genRandomContractId(taken, 6);
+          setNewContractId(cid);
+        }
+        const payload = { contractId: cid, ...base };
         const inserted = await insertLoan(payload);
         if (inserted) {
           setLoans((prev) => [...prev, inserted].sort((a, b) => (Number(a.contractId || 0) - Number(b.contractId || 0))));
