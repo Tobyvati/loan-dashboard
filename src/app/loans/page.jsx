@@ -52,6 +52,27 @@ const fmt = (n) => {
 };
 
 // =============================
+// Random contractId generator + unique violation detector
+// =============================
+// =============================
+const genRandomContractId = (takenIds, digits = 6) => {
+  const min = Math.pow(10, digits - 1);
+  const max = Math.pow(10, digits) - 1;
+  for (let i = 0; i < 100; i++) {
+    const n = Math.floor(Math.random() * (max - min + 1)) + min;
+    if (!takenIds.has(n)) return n;
+  }
+  // Fallback (hiếm): dựa vào time để vẫn đúng số chữ số
+  const now = Date.now() % (max - min + 1);
+  return Math.max(min, Math.min(max, now + min));
+};
+
+const isUniqueViolation = (err) => {
+  const msg = String(err?.message || err?.details || "");
+  return err?.code === '23505' || /duplicate key value/i.test(msg) || /unique constraint/i.test(msg);
+};
+
+// =============================
 // DB column name adapters (fix mismatches like givenAmount vs givenamount)
 // =============================
 const camelToSnake = (s) => s.replace(/([A-Z])/g, "_$1").toLowerCase();
@@ -132,6 +153,7 @@ export default function LoanDashboard() {
   const [payContractId, setPayContractId] = useState(null);
   const [loans, setLoans] = useState([]);
   const [nextContractId, setNextContractId] = useState(1);
+  const [newContractId, setNewContractId] = useState(null);
   const [search, setSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -187,20 +209,35 @@ export default function LoanDashboard() {
   };
 
   const insertLoan = async (rowBase) => {
-    // Try current dbMode first, then fallbacks
+    // Thử nhiều lần nếu dính unique constraint (mã HĐ trùng)
     const modes = [dbMode, 'camel', 'lower', 'snake'];
+    const MAX_ATTEMPTS = 7;
     let lastErr;
-    for (const mode of modes) {
-      try {
-        const payload = mapPayloadToDb(rowBase, mode);
-        const { data, error } = await supabase.from('loans').insert(payload).select();
-        if (error) throw error;
-        setDbMode(mode); // lock successful mode
-        return data?.[0] ? unifyLoanRow(data[0]) : null;
-      } catch (e) {
-        lastErr = e;
-        continue;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      let retriedForUnique = false;
+      for (const mode of modes) {
+        try {
+          const payload = mapPayloadToDb(rowBase, mode);
+          const { data, error } = await supabase.from('loans').insert(payload).select();
+          if (error) throw error;
+          setDbMode(mode); // lock successful mode
+          return data?.[0] ? unifyLoanRow(data[0]) : null;
+        } catch (e) {
+          lastErr = e;
+          if (isUniqueViolation(e)) {
+            // Sinh lại contractId và thử lại toàn bộ vòng lặp
+            const taken = new Set(loans.map((l) => Number(l.contractId ?? l.contract_id ?? l.id) || 0));
+            if (rowBase.contractId) taken.add(Number(rowBase.contractId));
+            rowBase.contractId = genRandomContractId(taken, 6);
+            retriedForUnique = true;
+            break; // thoát vòng for(mode), quay lại for(attempt)
+          }
+          // Nếu không phải unique violation, thử mode tiếp theo
+          continue;
+        }
       }
+      if (!retriedForUnique) break; // nếu không phải unique lỗi, thoát để throw
     }
     throw lastErr;
   };
@@ -296,7 +333,14 @@ export default function LoanDashboard() {
     setFormData({ name: "", phone: "", imei: "", loanAmount: "", givenAmount: "", loanDays: "", payInterval: "", startDate: "" });
   };
 
-  const openCreate = () => { resetForm(); setIsFormOpen(true); };
+  const openCreate = () => {
+    resetForm();
+    // Sinh mã HĐ ngẫu nhiên 6 chữ số, không trùng trong danh sách hiện tại
+    const taken = new Set(loans.map((l) => Number(l.contractId ?? l.contract_id ?? l.id) || 0));
+    const rid = genRandomContractId(taken, 6);
+    setNewContractId(rid);
+    setIsFormOpen(true);
+  };
 
   const openEdit = (loan) => {
     setIsEdit(true);
@@ -344,7 +388,8 @@ export default function LoanDashboard() {
         const updated = await updateLoanById(editContractId, patch);
         if (updated) setLoans((prev) => prev.map((l) => (l.contractId === editContractId ? updated : l)));
       } else {
-        const inserted = await insertLoan(base);
+        const payload = { contractId: newContractId, ...base };
+        const inserted = await insertLoan(payload);
         if (inserted) {
           setLoans((prev) => [...prev, inserted].sort((a, b) => (Number(a.contractId || 0) - Number(b.contractId || 0))));
           setNextContractId((n) => Math.max(n, (inserted.contractId || 0) + 1));
@@ -459,6 +504,15 @@ export default function LoanDashboard() {
     runSelfTests();
   }, []);
 
+  // Extra self-test for random contractId
+  useEffect(() => {
+    try {
+      const taken = new Set([123456]);
+      const r = genRandomContractId(taken, 6);
+      console.assert(r !== 123456 && String(r).length === 6, 'random contractId unique & 6 digits');
+    } catch {}
+  }, []);
+
   // =============================
   // UI
   // =============================
@@ -495,7 +549,7 @@ export default function LoanDashboard() {
             <Button variant="secondary" onClick={async ()=>{ try{ await supabase.auth.signOut(); }catch{} }}>Đăng xuất</Button>
           </>
         ) : (
-          <form onSubmit={(e)=>{e.preventDefault(); (async()=>{ try{ setErrorMsg(""); setInfoMsg(""); if(!authEmail){ setErrorMsg('Nhập email để đăng nhập'); return;} const { error } = await supabase.auth.signInWithOtp({ email: authEmail, options: { emailRedirectTo: typeof window!=='undefined'?window.location.origin:undefined } }); if(error) throw error; setInfoMsg('Đã gửi link đăng nhập. Vui lòng kiểm tra email.'); } catch(e){ console.error(e); setErrorMsg(`Đăng nhập thất bại: ${e?.message || e}`);} })(); }} className="flex items-center gap-2">
+          <form onSubmit={(e)=>{e.preventDefault(); (async()=>{ try{ setErrorMsg(""); setInfoMsg(""); if(!authEmail){ setErrorMsg('Nhập email để đăng nhập'); return;} const { error } = await supabase.auth.signInWithOtp({ email: authEmail, options: { emailRedirectTo: (process.env.NEXT_PUBLIC_SITE_URL || (typeof window!=='undefined' ? window.location.origin : undefined)) } }); if(error) throw error; setInfoMsg('Đã gửi link đăng nhập. Vui lòng kiểm tra email.'); } catch(e){ console.error(e); setErrorMsg(`Đăng nhập thất bại: ${e?.message || e}`);} })(); }} className="flex items-center gap-2">
             <input type="email" placeholder="Email để đăng nhập" value={authEmail} onChange={(e)=> setAuthEmail(e.target.value)} className="border p-2 rounded" />
             <Button type="submit">Gửi link đăng nhập</Button>
           </form>
@@ -615,11 +669,11 @@ export default function LoanDashboard() {
         <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
         <div className="fixed inset-0 flex items-center justify-center p-4">
           <Dialog.Panel className="bg-white p-6 rounded-xl w-full max-w-3xl">
-            <Dialog.Title className="text-xl font-semibold mb-4">{isEdit ? `Sửa hợp đồng #${editContractId}` : `Thêm người vay (#${nextContractId})`}</Dialog.Title>
+            <Dialog.Title className="text-xl font-semibold mb-4">{isEdit ? `Sửa hợp đồng #${editContractId}` : `Thêm người vay (#${newContractId ?? '......'})`}</Dialog.Title>
             <div className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
                 <label className="block mb-1">Mã hợp đồng</label>
-                <input type="text" value={isEdit ? editContractId : nextContractId} disabled className="w-full border p-2 rounded bg-gray-100" />
+                <input type="text" value={isEdit ? editContractId : newContractId ?? ''} disabled className="w-full border p-2 rounded bg-gray-100" />
               </div>
               <div>
                 <label className="block mb-1">Tên người vay</label>
