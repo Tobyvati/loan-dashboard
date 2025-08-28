@@ -51,6 +51,13 @@ const fmt = (n) => {
   return num.toLocaleString("vi-VN");
 };
 
+// Contract ID display as 6 digits (pad with zeros)
+const fmtContractId = (v) => {
+  if (v === null || v === undefined || v === "") return "";
+  const s = String(v).replace(/\D/g, "");
+  return s.padStart(6, "0").slice(-6);
+};
+
 // =============================
 // Random contractId generator + unique violation detector
 // =============================
@@ -291,7 +298,11 @@ export default function LoanDashboard() {
   const filteredLoans = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return loans;
-    return loans.filter((l) => String(l.contractId).includes(q) || (l.name || "").toLowerCase().includes(q));
+    return loans.filter((l) => {
+      const raw = String(l.contractId || "");
+      const pad = fmtContractId(l.contractId || "");
+      return raw.includes(q) || pad.includes(q) || (l.name || "").toLowerCase().includes(q);
+    });
   }, [loans, search]);
 
   const pageCount = Math.max(1, Math.ceil(filteredLoans.length / 10));
@@ -457,9 +468,9 @@ export default function LoanDashboard() {
       if (!info) return;
       if (info.overdueCycles > 0) {
         const daysText = info.diff !== null && info.diff < 0 ? `, trễ ${Math.abs(info.diff)} ngày` : "";
-        items.push({ id: l.contractId, type: "overdue", text: `HĐ #${l.contractId}: quá ${info.overdueCycles} kỳ${daysText}` });
+        items.push({ id: l.contractId, type: "overdue", text: `HĐ #${fmtContractId(l.contractId)}: quá ${info.overdueCycles} kỳ${daysText}` });
       } else if (!info.suppressSoonWarning && info.diff !== null && info.diff <= 3) {
-        items.push({ id: l.contractId, type: "soon", text: `HĐ #${l.contractId}: còn ${info.diff} ngày đến hạn` });
+        items.push({ id: l.contractId, type: "soon", text: `HĐ #${fmtContractId(l.contractId)}: còn ${info.diff} ngày đến hạn` });
       }
     });
     return items.sort((a, b) => (a.type === b.type ? 0 : a.type === "overdue" ? -1 : 1));
@@ -489,6 +500,8 @@ export default function LoanDashboard() {
         console.assert(demo && demo.expectedDueCycles === 2, "expectedDueCycles should be 2 (20/10)");
         const demo2 = getDueStatus(start20, 10, 30, 3000, 1000);
         console.assert(demo2 && demo2.cyclesPaidEq === 1, "cyclesPaidEq=1");
+        console.assert(fmtContractId(1) === '000001', 'fmtContractId pads to 6');
+        console.assert(fmtContractId('987654') === '987654', 'fmtContractId keeps 6-digit');
         // Adapter tests
         console.assert(camelToSnake('givenAmount') === 'given_amount', 'camelToSnake works');
         console.assert(camelToLower('givenAmount') === 'givenamount', 'camelToLower works');
@@ -599,7 +612,7 @@ export default function LoanDashboard() {
                   const perCycleShow = loan.loanDays > 0 && loan.payInterval > 0 ? Math.ceil((loan.givenAmount || 0) * loan.payInterval / loan.loanDays) : 0;
                   return (
                     <tr key={loan.contractId} className={`border-b ${getRowStyle(loan)}`}>
-                      <td className="p-2">{loan.contractId}</td>
+                      <td className="p-2">{fmtContractId(loan.contractId)}</td>
                       <td className="p-2">{loan.name}</td>
                       <td className="p-2">{loan.phone}</td>
                       <td className="p-2">{loan.imei}</td>
@@ -669,11 +682,11 @@ export default function LoanDashboard() {
         <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
         <div className="fixed inset-0 flex items-center justify-center p-4">
           <Dialog.Panel className="bg-white p-6 rounded-xl w-full max-w-3xl">
-            <Dialog.Title className="text-xl font-semibold mb-4">{isEdit ? `Sửa hợp đồng #${editContractId}` : `Thêm người vay (#${newContractId ?? '......'})`}</Dialog.Title>
+            <Dialog.Title className="text-xl font-semibold mb-4">{isEdit ? `Sửa hợp đồng #${fmtContractId(editContractId)}` : `Thêm người vay (#${newContractId ? fmtContractId(newContractId) : '......'})`}</Dialog.Title>
             <div className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
                 <label className="block mb-1">Mã hợp đồng</label>
-                <input type="text" value={isEdit ? editContractId : newContractId ?? ''} disabled className="w-full border p-2 rounded bg-gray-100" />
+                <input type="text" value={isEdit ? fmtContractId(editContractId) : (newContractId ? fmtContractId(newContractId) : '')} disabled className="w-full border p-2 rounded bg-gray-100" />
               </div>
               <div>
                 <label className="block mb-1">Tên người vay</label>
